@@ -4,19 +4,19 @@ const ME = {
   name: params.get('name') || 'Misafir',
   avatar: params.get('avatar') || '😊',
   color: params.get('color') || '#7c3aed',
-  id: 'user_' + Math.random().toString(36).slice(2, 9),
+  id: null,
 };
 const ACTION = params.get('action') || 'create';
 const INITIAL_ROOM_ID = params.get('roomId') || null;
 const ROOM_NAME = params.get('roomName') || 'Arkadaş Odası';
 
-let db = null;
+let ws = null;
 let roomId = null;
 let users = {};
 let polls = {};
 let currentTheme = 'cafe';
 let tableItems = [];
-let unsubscribers = [];
+let roomShown = false;
 
 // ─── Menu Data ──────────────────────────────────────────
 const MENU = {
@@ -52,167 +52,161 @@ const MENU = {
   ],
 };
 
-// ─── Firebase Init ───────────────────────────────────────
-async function initFirebase() {
-  updateConnectStatus('Firebase bağlanıyor...', 30);
+// ─── WebSocket Init ──────────────────────────────────────
+function connectWebSocket() {
+  updateConnectStatus('Sunucuya bağlanılıyor...', 30);
 
-  const { initializeApp } = await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js');
-  const { getDatabase, ref, push, set, onChildAdded, onValue, onDisconnect, serverTimestamp, remove } =
-    await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js');
+  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${protocol}//${location.host}/ws`);
 
-  const app = initializeApp(firebaseConfig);
-  db = getDatabase(app);
-  window._fbRef = ref;
-  window._fbPush = push;
-  window._fbSet = set;
-  window._fbOnChildAdded = onChildAdded;
-  window._fbOnValue = onValue;
-  window._fbOnDisconnect = onDisconnect;
-  window._fbServerTimestamp = serverTimestamp;
-  window._fbRemove = remove;
-
-  updateConnectStatus('Odaya bağlanılıyor...', 60);
-  await joinOrCreateRoom();
-}
-
-function generateRoomCode() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let code = '';
-  for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
-  return code;
-}
-
-// ─── Room Join/Create ────────────────────────────────────
-async function joinOrCreateRoom() {
-  const { ref, set, onValue, push, onChildAdded, onDisconnect, serverTimestamp } = getHelpers();
-
-  if (ACTION === 'join' && INITIAL_ROOM_ID) {
-    // Var olan odaya katıl
-    roomId = INITIAL_ROOM_ID.toUpperCase();
-    const roomRef = ref(db, `rooms/${roomId}`);
-    const snap = await new Promise(res => onValue(roomRef, res, { onlyOnce: true }));
-    if (!snap.exists()) {
-      updateConnectStatus('❌ Oda bulunamadı!', 100);
-      setTimeout(() => location.href = 'index.html', 2000);
-      return;
+  ws.addEventListener('open', () => {
+    updateConnectStatus('Odaya bağlanılıyor...', 60);
+    const payload = {
+      type: 'join_room',
+      name: ME.name,
+      avatar: ME.avatar,
+      color: ME.color,
+      roomName: ROOM_NAME,
+    };
+    if (ACTION === 'join' && INITIAL_ROOM_ID) {
+      payload.roomId = INITIAL_ROOM_ID.toUpperCase();
     }
-    const roomData = snap.val();
-    document.getElementById('headerRoomName').textContent = roomData.name || roomId;
-  } else {
-    // Yeni oda oluştur
-    roomId = generateRoomCode();
-    await set(ref(db, `rooms/${roomId}`), {
-      name: ROOM_NAME,
-      theme: 'cafe',
-      createdAt: Date.now(),
-    });
-  }
-
-  document.getElementById('headerRoomCode').textContent = roomId;
-
-  // Kullanıcıyı odaya ekle
-  const userRef = ref(db, `rooms/${roomId}/users/${ME.id}`);
-  await set(userRef, {
-    id: ME.id,
-    name: ME.name,
-    avatar: ME.avatar,
-    color: ME.color,
-    status: 'Çevrimiçi',
-    joinedAt: Date.now(),
+    ws.send(JSON.stringify(payload));
   });
 
-  // Sekme kapanınca kullanıcıyı sil
-  const disc = onDisconnect(userRef);
-  disc.remove();
+  ws.addEventListener('message', (event) => {
+    let msg;
+    try { msg = JSON.parse(event.data); } catch { return; }
+    handleServerMessage(msg);
+  });
 
-  updateConnectStatus('Odaya girildi! ✅', 100);
+  ws.addEventListener('close', () => {
+    if (!roomShown) {
+      updateConnectStatus('❌ Sunucu bağlantısı kesildi!', 100);
+    }
+  });
 
-  // Dinleyicileri başlat
-  subscribeToRoom();
-
-  // Sisteme giriş mesajı gönder
-  sendSystemMessage(`${ME.name} odaya katıldı! 🎉`);
-
-  setTimeout(showRoom, 600);
+  ws.addEventListener('error', () => {
+    updateConnectStatus('❌ Sunucuya bağlanılamadı! Deno sunucusunu çalıştır.', 100);
+  });
 }
 
-// ─── Subscribe to Room ───────────────────────────────────
-function subscribeToRoom() {
-  const { ref, onValue, onChildAdded } = getHelpers();
+function sendWs(data) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(data));
+  }
+}
 
-  // Kullanıcılar
-  const usersRef = ref(db, `rooms/${roomId}/users`);
-  onValue(usersRef, (snap) => {
-    users = snap.val() || {};
-    renderUsers();
-    renderAvatars();
-  });
+function handleServerMessage(msg) {
+  switch (msg.type) {
+    case 'join_error':
+      updateConnectStatus('❌ Oda bulunamadı!', 100);
+      setTimeout(() => { location.href = 'index.html'; }, 2000);
+      break;
 
-  // Tema
-  const themeRef = ref(db, `rooms/${roomId}/theme`);
-  onValue(themeRef, (snap) => {
-    if (snap.val()) { currentTheme = snap.val(); applyTheme(currentTheme); }
-  });
+    case 'joined':
+      ME.id = msg.userId;
+      roomId = msg.roomId;
+      document.getElementById('headerRoomCode').textContent = roomId;
+      break;
 
-  // Mesajlar (sadece yeni gelenler)
-  const msgsRef = ref(db, `rooms/${roomId}/messages`);
-  onChildAdded(msgsRef, (snap) => {
-    const msg = snap.val();
-    if (!msg) return;
-    if (msg.type === 'chat') {
+    case 'room_state': {
+      const room = msg.room;
+      document.getElementById('headerRoomName').textContent = room.name || roomId;
+      currentTheme = room.theme || 'cafe';
+      applyTheme(currentTheme);
+
+      users = {};
+      (room.users || []).forEach(u => { users[u.id] = u; });
+      renderUsers();
+      renderAvatars();
+
+      (room.orders || []).forEach(order => {
+        addOrderToUI(order);
+        addTableItem(order.emoji);
+      });
+
+      (room.playlist || []).forEach(song => addSongToUI(song));
+      if (room.currentSong) updateNowPlaying(room.currentSong);
+
+      updateConnectStatus('Odaya girildi! ✅', 100);
+      if (!roomShown) {
+        roomShown = true;
+        setTimeout(showRoom, 600);
+      }
+      break;
+    }
+
+    case 'user_joined':
+      users[msg.user.id] = msg.user;
+      renderUsers();
+      renderAvatars();
+      break;
+
+    case 'user_left':
+      delete users[msg.userId];
+      renderUsers();
+      renderAvatars();
+      break;
+
+    case 'system_message':
+      addSystemMsg(msg.text);
+      break;
+
+    case 'chat_message':
       addChatMsg(msg);
       showSpeakBubble(msg.userId, msg.text);
-    } else if (msg.type === 'system') {
-      addSystemMsg(msg.text);
-    } else if (msg.type === 'reaction') {
+      break;
+
+    case 'new_order':
+      addOrderToUI(msg.order);
+      addTableItem(msg.order.emoji);
+      break;
+
+    case 'reaction':
       spawnReaction(msg.emoji);
-    } else if (msg.type === 'dice') {
+      break;
+
+    case 'song_added':
+      addSongToUI(msg.song);
+      if (msg.currentSong) updateNowPlaying(msg.currentSong);
+      break;
+
+    case 'theme_changed':
+      currentTheme = msg.theme;
+      applyTheme(msg.theme);
+      break;
+
+    case 'user_status_updated':
+      if (users[msg.userId]) {
+        users[msg.userId].status = msg.status;
+        renderUsers();
+      }
+      break;
+
+    case 'dice_result': {
       const faces = ['', '⚀', '⚁', '⚂', '⚃', '⚄', '⚅'];
       addSystemMsg(`${msg.userName} zar attı: ${faces[msg.result]} (${msg.result})`);
-    } else if (msg.type === 'poll') {
-      addPollMsg(msg);
-    } else if (msg.type === 'poll_vote') {
-      updatePollVote(msg);
+      break;
     }
-  });
 
-  // Siparişler
-  const ordersRef = ref(db, `rooms/${roomId}/orders`);
-  onChildAdded(ordersRef, (snap) => {
-    const order = snap.val();
-    if (order) { addOrderToUI(order); addTableItem(order.emoji); }
-  });
+    case 'poll_created':
+      addPollMsg({
+        pollId: msg.id,
+        question: msg.question,
+        options: msg.options,
+        createdBy: msg.createdBy,
+      });
+      break;
 
-  // Müzik
-  const playlistRef = ref(db, `rooms/${roomId}/playlist`);
-  onChildAdded(playlistRef, (snap) => {
-    const song = snap.val();
-    if (song) addSongToUI(song);
-  });
-
-  const currentSongRef = ref(db, `rooms/${roomId}/currentSong`);
-  onValue(currentSongRef, (snap) => {
-    if (snap.val()) updateNowPlaying(snap.val());
-  });
-}
-
-// ─── Helpers ─────────────────────────────────────────────
-function getHelpers() {
-  return {
-    ref: window._fbRef,
-    push: window._fbPush,
-    set: window._fbSet,
-    onChildAdded: window._fbOnChildAdded,
-    onValue: window._fbOnValue,
-    onDisconnect: window._fbOnDisconnect,
-    serverTimestamp: window._fbServerTimestamp,
-    remove: window._fbRemove,
-  };
-}
-
-function pushMessage(data) {
-  const { ref, push } = getHelpers();
-  push(ref(db, `rooms/${roomId}/messages`), { ...data, timestamp: Date.now() });
+    case 'poll_vote':
+      updatePollVote({
+        pollId: msg.pollId,
+        voterId: msg.userId,
+        option: msg.option,
+      });
+      break;
+  }
 }
 
 // ─── UI: Show Room ───────────────────────────────────────
@@ -358,7 +352,7 @@ function sendChat() {
   const input = document.getElementById('chatInput');
   const text = input.value.trim();
   if (!text) return;
-  pushMessage({ type: 'chat', userId: ME.id, userName: ME.name, userAvatar: ME.avatar, userColor: ME.color, text });
+  sendWs({ type: 'chat_message', text });
   input.value = '';
 }
 
@@ -369,26 +363,19 @@ function addEmoji(emoji) {
 }
 
 function sendReaction(emoji) {
-  pushMessage({ type: 'reaction', userId: ME.id, userName: ME.name, emoji });
-}
-
-function sendSystemMessage(text) {
-  pushMessage({ type: 'system', text });
+  sendWs({ type: 'reaction', emoji });
 }
 
 function rollDice() {
-  const result = Math.floor(Math.random() * 6) + 1;
-  pushMessage({ type: 'dice', userId: ME.id, userName: ME.name, result });
+  sendWs({ type: 'dice_roll' });
 }
 
 function updateStatus(status) {
-  const { ref, set } = getHelpers();
-  set(ref(db, `rooms/${roomId}/users/${ME.id}/status`), status);
+  sendWs({ type: 'status_update', status });
 }
 
 function changeTheme(theme) {
-  const { ref, set } = getHelpers();
-  set(ref(db, `rooms/${roomId}/theme`), theme);
+  sendWs({ type: 'change_theme', theme });
   toggleThemePanel();
 }
 
@@ -396,15 +383,7 @@ function addSong() {
   const title = document.getElementById('songTitle').value.trim();
   const artist = document.getElementById('songArtist').value.trim();
   if (!title) return;
-  const { ref, push, set } = getHelpers();
-  const songRef = push(ref(db, `rooms/${roomId}/playlist`));
-  const song = { id: songRef.key, title, artist, addedBy: ME.name, emoji: '🎵' };
-  set(songRef, song);
-  // İlk şarkıysa currentSong yap
-  const { onValue } = getHelpers();
-  onValue(ref(db, `rooms/${roomId}/currentSong`), (snap) => {
-    if (!snap.val()) set(ref(db, `rooms/${roomId}/currentSong`), song);
-  }, { onlyOnce: true });
+  sendWs({ type: 'add_song', title, artist });
   document.getElementById('songTitle').value = '';
   document.getElementById('songArtist').value = '';
 }
@@ -415,13 +394,12 @@ function createPoll() {
   const o2 = document.getElementById('pollOpt2').value.trim();
   const o3 = document.getElementById('pollOpt3').value.trim();
   if (!question || !o1 || !o2) return showToast('⚠️ Soru ve en az 2 seçenek gerekli!');
-  const pollId = 'poll_' + Math.random().toString(36).slice(2, 9);
-  pushMessage({ type: 'poll', pollId, question, options: [o1, o2, ...(o3 ? [o3] : [])], createdBy: ME.name });
+  sendWs({ type: 'poll_create', question, options: [o1, o2, ...(o3 ? [o3] : [])] });
   closePollModal();
 }
 
 function votePoll(pollId, option) {
-  pushMessage({ type: 'poll_vote', pollId, voterId: ME.id, userName: ME.name, option });
+  sendWs({ type: 'poll_vote', pollId, option });
 }
 
 // ─── Menu ─────────────────────────────────────────────────
@@ -443,13 +421,7 @@ function switchCategory(cat, btn) {
 }
 
 function orderItem(name, emoji, category) {
-  const { ref, push, set } = getHelpers();
-  const orderRef = push(ref(db, `rooms/${roomId}/orders`));
-  set(orderRef, {
-    id: orderRef.key,
-    userId: ME.id, userName: ME.name, userColor: ME.color,
-    item: name, emoji, category, timestamp: Date.now(),
-  });
+  sendWs({ type: 'order', item: name, emoji, category });
   showToast(`${emoji} ${name} sipariş edildi!`);
 }
 
@@ -551,7 +523,4 @@ function escHtml(str) {
 }
 
 // ─── Init ─────────────────────────────────────────────────
-initFirebase().catch(err => {
-  updateConnectStatus('❌ Firebase bağlantı hatası! Config dosyasını kontrol et.', 100);
-  console.error(err);
-});
+connectWebSocket();

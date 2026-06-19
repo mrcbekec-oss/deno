@@ -96,15 +96,24 @@ function handleWebSocket(socket: WebSocket) {
       const userId = crypto.randomUUID();
       myId = userId;
 
-      let roomId = (msg.roomId as string) || "";
-      let room = rooms.get(roomId);
+      const requestedRoomId = ((msg.roomId as string) || "").toUpperCase();
+      let room = requestedRoomId ? rooms.get(requestedRoomId) : undefined;
 
       if (!room) {
-        roomId = generateRoomCode();
+        if (requestedRoomId) {
+          try {
+            socket.send(JSON.stringify({ type: "join_error", message: "Oda bulunamadı" }));
+          } catch { /* skip */ }
+          socket.close();
+          return;
+        }
+        const roomId = generateRoomCode();
         room = { id: roomId, name: (msg.roomName as string) || "Arkadaş Odası", theme: "cafe", users: new Map(), orders: [], playlist: [], currentSong: null };
         rooms.set(roomId, room);
         console.log(`Oda oluşturuldu: ${roomId}`);
       }
+
+      const roomId = room.id;
 
       const user: User = { id: userId, name: (msg.name as string) || "Misafir", avatar: (msg.avatar as string) || "😊", color: (msg.color as string) || "#7c3aed", status: "Çevrimiçi", socket, roomId };
       room.users.set(userId, user);
