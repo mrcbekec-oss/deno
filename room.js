@@ -4,19 +4,19 @@ const ME = {
   name: params.get('name') || 'Misafir',
   avatar: params.get('avatar') || '😊',
   color: params.get('color') || '#7c3aed',
-  id: null,
+  id: 'user_' + Math.random().toString(36).slice(2, 9),
 };
 const ACTION = params.get('action') || 'create';
-const ROOM_ID = params.get('roomId') || null;
+const INITIAL_ROOM_ID = params.get('roomId') || null;
 const ROOM_NAME = params.get('roomName') || 'Arkadaş Odası';
 
-let ws = null;
-let myUserId = null;
+let db = null;
 let roomId = null;
 let users = {};
 let polls = {};
 let currentTheme = 'cafe';
 let tableItems = [];
+let unsubscribers = [];
 
 // ─── Menu Data ──────────────────────────────────────────
 const MENU = {
@@ -52,132 +52,167 @@ const MENU = {
   ],
 };
 
-// ─── WebSocket ──────────────────────────────────────────
-function connect() {
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ws = new WebSocket(`${proto}//${location.host}/ws`);
+// ─── Firebase Init ───────────────────────────────────────
+async function initFirebase() {
+  updateConnectStatus('Firebase bağlanıyor...', 30);
 
-  ws.onopen = () => {
-    updateConnectStatus('Kimlik doğrulanıyor...', 70);
-    ws.send(JSON.stringify({
-      type: 'join_room',
-      name: ME.name,
-      avatar: ME.avatar,
-      color: ME.color,
-      roomId: ACTION === 'join' ? ROOM_ID : null,
-      roomName: ROOM_NAME,
-    }));
-  };
+  const { initializeApp } = await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js');
+  const { getDatabase, ref, push, set, onChildAdded, onValue, onDisconnect, serverTimestamp, remove } =
+    await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js');
 
-  ws.onmessage = (e) => {
-    try { handleMessage(JSON.parse(e.data)); } catch (_) {}
-  };
+  const app = initializeApp(firebaseConfig);
+  db = getDatabase(app);
+  window._fbRef = ref;
+  window._fbPush = push;
+  window._fbSet = set;
+  window._fbOnChildAdded = onChildAdded;
+  window._fbOnValue = onValue;
+  window._fbOnDisconnect = onDisconnect;
+  window._fbServerTimestamp = serverTimestamp;
+  window._fbRemove = remove;
 
-  ws.onclose = () => {
-    showToast('⚠️ Bağlantı kesildi. Yeniden bağlanılıyor...');
-    setTimeout(connect, 3000);
-  };
-
-  ws.onerror = () => showToast('❌ Bağlantı hatası!');
+  updateConnectStatus('Odaya bağlanılıyor...', 60);
+  await joinOrCreateRoom();
 }
 
-function updateConnectStatus(text, pct) {
-  document.getElementById('connectStatus').textContent = text;
-  document.getElementById('connectFill').style.width = pct + '%';
+function generateRoomCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
+  return code;
 }
 
-function handleMessage(msg) {
-  switch (msg.type) {
-    case 'joined':
-      myUserId = msg.userId;
-      roomId = msg.roomId;
-      ME.id = myUserId;
-      updateConnectStatus('Odaya girildi! ✅', 100);
-      setTimeout(showRoom, 600);
-      break;
+// ─── Room Join/Create ────────────────────────────────────
+async function joinOrCreateRoom() {
+  const { ref, set, onValue, push, onChildAdded, onDisconnect, serverTimestamp } = getHelpers();
 
-    case 'room_state':
-      currentTheme = msg.room.theme || 'cafe';
-      applyTheme(currentTheme);
-      document.getElementById('headerRoomName').textContent = msg.room.name;
-      document.getElementById('headerRoomCode').textContent = msg.room.id;
-      users = {};
-      msg.room.users.forEach(u => { users[u.id] = u; });
-      renderUsers();
-      renderAvatars();
-      msg.room.orders.forEach(o => addOrderToUI(o));
-      if (msg.room.playlist) {
-        msg.room.playlist.forEach(s => addSongToUI(s));
-      }
-      if (msg.room.currentSong) {
-        updateNowPlaying(msg.room.currentSong);
-      }
-      break;
+  if (ACTION === 'join' && INITIAL_ROOM_ID) {
+    // Var olan odaya katıl
+    roomId = INITIAL_ROOM_ID.toUpperCase();
+    const roomRef = ref(db, `rooms/${roomId}`);
+    const snap = await new Promise(res => onValue(roomRef, res, { onlyOnce: true }));
+    if (!snap.exists()) {
+      updateConnectStatus('❌ Oda bulunamadı!', 100);
+      setTimeout(() => location.href = 'index.html', 2000);
+      return;
+    }
+    const roomData = snap.val();
+    document.getElementById('headerRoomName').textContent = roomData.name || roomId;
+  } else {
+    // Yeni oda oluştur
+    roomId = generateRoomCode();
+    await set(ref(db, `rooms/${roomId}`), {
+      name: ROOM_NAME,
+      theme: 'cafe',
+      createdAt: Date.now(),
+    });
+  }
 
-    case 'user_joined':
-      users[msg.user.id] = msg.user;
-      renderUsers();
-      renderAvatars();
-      break;
+  document.getElementById('headerRoomCode').textContent = roomId;
 
-    case 'user_left':
-      delete users[msg.userId];
-      renderUsers();
-      renderAvatars();
-      addSystemMsg(`${msg.userName} odadan ayrıldı 👋`);
-      break;
+  // Kullanıcıyı odaya ekle
+  const userRef = ref(db, `rooms/${roomId}/users/${ME.id}`);
+  await set(userRef, {
+    id: ME.id,
+    name: ME.name,
+    avatar: ME.avatar,
+    color: ME.color,
+    status: 'Çevrimiçi',
+    joinedAt: Date.now(),
+  });
 
-    case 'user_status_updated':
-      if (users[msg.userId]) {
-        users[msg.userId].status = msg.status;
-        renderUsers();
-        renderAvatars();
-      }
-      break;
+  // Sekme kapanınca kullanıcıyı sil
+  const disc = onDisconnect(userRef);
+  disc.remove();
 
-    case 'chat_message':
+  updateConnectStatus('Odaya girildi! ✅', 100);
+
+  // Dinleyicileri başlat
+  subscribeToRoom();
+
+  // Sisteme giriş mesajı gönder
+  sendSystemMessage(`${ME.name} odaya katıldı! 🎉`);
+
+  setTimeout(showRoom, 600);
+}
+
+// ─── Subscribe to Room ───────────────────────────────────
+function subscribeToRoom() {
+  const { ref, onValue, onChildAdded } = getHelpers();
+
+  // Kullanıcılar
+  const usersRef = ref(db, `rooms/${roomId}/users`);
+  onValue(usersRef, (snap) => {
+    users = snap.val() || {};
+    renderUsers();
+    renderAvatars();
+  });
+
+  // Tema
+  const themeRef = ref(db, `rooms/${roomId}/theme`);
+  onValue(themeRef, (snap) => {
+    if (snap.val()) { currentTheme = snap.val(); applyTheme(currentTheme); }
+  });
+
+  // Mesajlar (sadece yeni gelenler)
+  const msgsRef = ref(db, `rooms/${roomId}/messages`);
+  onChildAdded(msgsRef, (snap) => {
+    const msg = snap.val();
+    if (!msg) return;
+    if (msg.type === 'chat') {
       addChatMsg(msg);
       showSpeakBubble(msg.userId, msg.text);
-      break;
-
-    case 'system_message':
+    } else if (msg.type === 'system') {
       addSystemMsg(msg.text);
-      break;
-
-    case 'new_order':
-      addOrderToUI(msg.order);
-      addTableItem(msg.order.emoji);
-      addSystemMsg(`${msg.order.userName} ${msg.order.emoji} ${msg.order.item} söyledi!`);
-      break;
-
-    case 'reaction':
+    } else if (msg.type === 'reaction') {
       spawnReaction(msg.emoji);
-      break;
-
-    case 'theme_changed':
-      currentTheme = msg.theme;
-      applyTheme(currentTheme);
-      addSystemMsg(`${msg.changedBy} temayı değiştirdi 🎨`);
-      break;
-
-    case 'dice_result':
+    } else if (msg.type === 'dice') {
       const faces = ['', '⚀', '⚁', '⚂', '⚃', '⚄', '⚅'];
       addSystemMsg(`${msg.userName} zar attı: ${faces[msg.result]} (${msg.result})`);
-      break;
-
-    case 'song_added':
-      addSongToUI(msg.song);
-      if (msg.currentSong) updateNowPlaying(msg.currentSong);
-      break;
-
-    case 'poll_created':
+    } else if (msg.type === 'poll') {
       addPollMsg(msg);
-      break;
-
-    case 'poll_vote':
+    } else if (msg.type === 'poll_vote') {
       updatePollVote(msg);
-      break;
-  }
+    }
+  });
+
+  // Siparişler
+  const ordersRef = ref(db, `rooms/${roomId}/orders`);
+  onChildAdded(ordersRef, (snap) => {
+    const order = snap.val();
+    if (order) { addOrderToUI(order); addTableItem(order.emoji); }
+  });
+
+  // Müzik
+  const playlistRef = ref(db, `rooms/${roomId}/playlist`);
+  onChildAdded(playlistRef, (snap) => {
+    const song = snap.val();
+    if (song) addSongToUI(song);
+  });
+
+  const currentSongRef = ref(db, `rooms/${roomId}/currentSong`);
+  onValue(currentSongRef, (snap) => {
+    if (snap.val()) updateNowPlaying(snap.val());
+  });
+}
+
+// ─── Helpers ─────────────────────────────────────────────
+function getHelpers() {
+  return {
+    ref: window._fbRef,
+    push: window._fbPush,
+    set: window._fbSet,
+    onChildAdded: window._fbOnChildAdded,
+    onValue: window._fbOnValue,
+    onDisconnect: window._fbOnDisconnect,
+    serverTimestamp: window._fbServerTimestamp,
+    remove: window._fbRemove,
+  };
+}
+
+function pushMessage(data) {
+  const { ref, push } = getHelpers();
+  push(ref(db, `rooms/${roomId}/messages`), { ...data, timestamp: Date.now() });
 }
 
 // ─── UI: Show Room ───────────────────────────────────────
@@ -200,7 +235,7 @@ function renderUsers() {
     <div class="user-item">
       <div class="user-avatar-sm" style="border:2px solid ${u.color}">${u.avatar}</div>
       <div class="user-info-sm">
-        <div class="user-name-sm" style="color:${u.color}">${u.name}${u.id === myUserId ? ' (sen)' : ''}</div>
+        <div class="user-name-sm" style="color:${u.color}">${u.name}${u.id === ME.id ? ' (sen)' : ''}</div>
         <div class="user-status-sm">${u.status || 'Çevrimiçi'}</div>
       </div>
       <div class="user-dot"></div>
@@ -243,29 +278,22 @@ function renderAvatars() {
 
 function showSpeakBubble(userId, text) {
   const bubble = document.getElementById(`bubble-${userId}`);
-  if (!bubble) return;
   const seat = document.getElementById(`seat-${userId}`);
-  if (!seat) return;
-
+  if (!bubble || !seat) return;
   bubble.classList.add('speaking');
   let existing = seat.querySelector('.avatar-chat-bubble');
   if (existing) existing.remove();
-
   const cb = document.createElement('div');
   cb.className = 'avatar-chat-bubble';
   cb.textContent = text.length > 40 ? text.slice(0, 37) + '...' : text;
   seat.appendChild(cb);
-
-  setTimeout(() => {
-    bubble.classList.remove('speaking');
-    cb.remove();
-  }, 4000);
+  setTimeout(() => { bubble.classList.remove('speaking'); cb.remove(); }, 4000);
 }
 
 // ─── UI: Chat ────────────────────────────────────────────
 function addChatMsg(msg) {
   const el = document.getElementById('chatMessages');
-  const isOwn = msg.userId === myUserId;
+  const isOwn = msg.userId === ME.id;
   const time = new Date(msg.timestamp).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
   const div = document.createElement('div');
   div.className = `chat-msg ${isOwn ? 'own' : ''}`;
@@ -294,10 +322,10 @@ function addPollMsg(poll) {
   const div = document.createElement('div');
   div.className = 'system-msg';
   div.innerHTML = `
-    <div class="poll-msg" id="poll-${poll.id}">
+    <div class="poll-msg" id="poll-${poll.pollId}">
       <div class="poll-question">📊 ${escHtml(poll.question)}</div>
       ${poll.options.map(opt => `
-        <div class="poll-option" onclick="votePoll('${poll.id}','${escHtml(opt)}')" data-option="${escHtml(opt)}">
+        <div class="poll-option" onclick="votePoll('${poll.pollId}','${escHtml(opt)}')" data-option="${escHtml(opt)}">
           <span>${escHtml(opt)}</span><span class="vote-count" data-opt="${escHtml(opt)}">0 oy</span>
         </div>
       `).join('')}
@@ -306,23 +334,22 @@ function addPollMsg(poll) {
   `;
   el.appendChild(div);
   el.scrollTop = el.scrollHeight;
-  polls[poll.id] = { ...poll, votes: {} };
+  polls[poll.pollId] = { ...poll, votes: {} };
 }
 
 function updatePollVote(msg) {
   const p = polls[msg.pollId];
   if (!p) return;
-  p.votes[msg.userId] = msg.option;
+  p.votes[msg.voterId] = msg.option;
   const pollEl = document.getElementById(`poll-${msg.pollId}`);
   if (!pollEl) return;
   const counts = {};
   Object.values(p.votes).forEach(o => { counts[o] = (counts[o] || 0) + 1; });
   pollEl.querySelectorAll('.vote-count').forEach(el => {
-    const opt = el.dataset.opt;
-    el.textContent = (counts[opt] || 0) + ' oy';
+    el.textContent = (counts[el.dataset.opt] || 0) + ' oy';
   });
   pollEl.querySelectorAll('.poll-option').forEach(el => {
-    if (el.dataset.option === p.votes[myUserId]) el.classList.add('voted');
+    if (el.dataset.option === p.votes[ME.id]) el.classList.add('voted');
   });
 }
 
@@ -330,8 +357,8 @@ function updatePollVote(msg) {
 function sendChat() {
   const input = document.getElementById('chatInput');
   const text = input.value.trim();
-  if (!text || !ws) return;
-  ws.send(JSON.stringify({ type: 'chat_message', text }));
+  if (!text) return;
+  pushMessage({ type: 'chat', userId: ME.id, userName: ME.name, userAvatar: ME.avatar, userColor: ME.color, text });
   input.value = '';
 }
 
@@ -342,23 +369,26 @@ function addEmoji(emoji) {
 }
 
 function sendReaction(emoji) {
-  if (!ws) return;
-  ws.send(JSON.stringify({ type: 'reaction', emoji }));
+  pushMessage({ type: 'reaction', userId: ME.id, userName: ME.name, emoji });
+}
+
+function sendSystemMessage(text) {
+  pushMessage({ type: 'system', text });
 }
 
 function rollDice() {
-  if (!ws) return;
-  ws.send(JSON.stringify({ type: 'dice_roll' }));
+  const result = Math.floor(Math.random() * 6) + 1;
+  pushMessage({ type: 'dice', userId: ME.id, userName: ME.name, result });
 }
 
 function updateStatus(status) {
-  if (!ws) return;
-  ws.send(JSON.stringify({ type: 'status_update', status }));
+  const { ref, set } = getHelpers();
+  set(ref(db, `rooms/${roomId}/users/${ME.id}/status`), status);
 }
 
 function changeTheme(theme) {
-  if (!ws) return;
-  ws.send(JSON.stringify({ type: 'change_theme', theme }));
+  const { ref, set } = getHelpers();
+  set(ref(db, `rooms/${roomId}/theme`), theme);
   toggleThemePanel();
 }
 
@@ -366,7 +396,15 @@ function addSong() {
   const title = document.getElementById('songTitle').value.trim();
   const artist = document.getElementById('songArtist').value.trim();
   if (!title) return;
-  ws.send(JSON.stringify({ type: 'add_song', title, artist, emoji: '🎵' }));
+  const { ref, push, set } = getHelpers();
+  const songRef = push(ref(db, `rooms/${roomId}/playlist`));
+  const song = { id: songRef.key, title, artist, addedBy: ME.name, emoji: '🎵' };
+  set(songRef, song);
+  // İlk şarkıysa currentSong yap
+  const { onValue } = getHelpers();
+  onValue(ref(db, `rooms/${roomId}/currentSong`), (snap) => {
+    if (!snap.val()) set(ref(db, `rooms/${roomId}/currentSong`), song);
+  }, { onlyOnce: true });
   document.getElementById('songTitle').value = '';
   document.getElementById('songArtist').value = '';
 }
@@ -377,20 +415,17 @@ function createPoll() {
   const o2 = document.getElementById('pollOpt2').value.trim();
   const o3 = document.getElementById('pollOpt3').value.trim();
   if (!question || !o1 || !o2) return showToast('⚠️ Soru ve en az 2 seçenek gerekli!');
-  const options = [o1, o2, ...(o3 ? [o3] : [])];
-  ws.send(JSON.stringify({ type: 'poll_create', question, options }));
+  const pollId = 'poll_' + Math.random().toString(36).slice(2, 9);
+  pushMessage({ type: 'poll', pollId, question, options: [o1, o2, ...(o3 ? [o3] : [])], createdBy: ME.name });
   closePollModal();
 }
 
 function votePoll(pollId, option) {
-  if (!ws) return;
-  ws.send(JSON.stringify({ type: 'poll_vote', pollId, option }));
+  pushMessage({ type: 'poll_vote', pollId, voterId: ME.id, userName: ME.name, option });
 }
 
 // ─── Menu ─────────────────────────────────────────────────
-let currentCategory = 'food';
 function renderMenu(category) {
-  currentCategory = category;
   const el = document.getElementById('menuItems');
   el.innerHTML = MENU[category].map(item => `
     <div class="menu-item" onclick="orderItem('${escHtml(item.name)}','${item.emoji}','${category}')">
@@ -408,8 +443,13 @@ function switchCategory(cat, btn) {
 }
 
 function orderItem(name, emoji, category) {
-  if (!ws) return;
-  ws.send(JSON.stringify({ type: 'order', item: name, emoji, category }));
+  const { ref, push, set } = getHelpers();
+  const orderRef = push(ref(db, `rooms/${roomId}/orders`));
+  set(orderRef, {
+    id: orderRef.key,
+    userId: ME.id, userName: ME.name, userColor: ME.color,
+    item: name, emoji, category, timestamp: Date.now(),
+  });
   showToast(`${emoji} ${name} sipariş edildi!`);
 }
 
@@ -433,8 +473,7 @@ function addOrderToUI(order) {
 function addTableItem(emoji) {
   tableItems.push(emoji);
   if (tableItems.length > 8) tableItems.shift();
-  const el = document.getElementById('tableItems');
-  el.innerHTML = tableItems.map(e => `<div class="table-item">${e}</div>`).join('');
+  document.getElementById('tableItems').innerHTML = tableItems.map(e => `<div class="table-item">${e}</div>`).join('');
 }
 
 // ─── Reactions ────────────────────────────────────────────
@@ -445,7 +484,6 @@ function spawnReaction(emoji) {
   div.textContent = emoji;
   div.style.left = (20 + Math.random() * 60) + '%';
   div.style.bottom = '20px';
-  div.style.animationDelay = Math.random() * 0.3 + 's';
   layer.appendChild(div);
   setTimeout(() => div.remove(), 3000);
 }
@@ -458,6 +496,7 @@ function applyTheme(theme) {
 // ─── Music ────────────────────────────────────────────────
 function addSongToUI(song) {
   const el = document.getElementById('playlistEl');
+  if (document.getElementById(`song-${song.id}`)) return;
   const div = document.createElement('div');
   div.className = 'playlist-item';
   div.id = `song-${song.id}`;
@@ -485,9 +524,14 @@ function toggleMusic() {
 
 function openPollModal() { document.getElementById('pollModal').style.display = 'flex'; }
 function closePollModal(e) {
-  if (!e || e.target === document.getElementById('pollModal')) {
+  if (!e || e.target === document.getElementById('pollModal'))
     document.getElementById('pollModal').style.display = 'none';
-  }
+}
+
+// ─── Connect Status ───────────────────────────────────────
+function updateConnectStatus(text, pct) {
+  document.getElementById('connectStatus').textContent = text;
+  document.getElementById('connectFill').style.width = pct + '%';
 }
 
 // ─── Helpers ──────────────────────────────────────────────
@@ -503,8 +547,11 @@ function showToast(msg) {
 }
 
 function escHtml(str) {
-  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 // ─── Init ─────────────────────────────────────────────────
-connect();
+initFirebase().catch(err => {
+  updateConnectStatus('❌ Firebase bağlantı hatası! Config dosyasını kontrol et.', 100);
+  console.error(err);
+});
