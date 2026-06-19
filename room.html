@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SanalOda – Oda</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="room.css" />
+</head>
+<body class="theme-cafe" id="body">
+
+<!-- Connecting Screen -->
+<div class="connect-screen" id="connectScreen">
+  <div class="connect-inner">
+    <div class="connect-icon">🏠</div>
+    <h2>Odaya Bağlanıyor...</h2>
+    <div class="connect-bar"><div class="connect-fill" id="connectFill"></div></div>
+    <p id="connectStatus">Sunucuya bağlanılıyor...</p>
+  </div>
+</div>
+
+<!-- Header -->
+<header class="header" id="header" style="display:none">
+  <div class="header-left">
+    <a href="index.html" class="back-btn">← Çıkış</a>
+    <div class="room-info">
+      <span class="room-name" id="headerRoomName">Oda</span>
+      <span class="room-code-badge" id="headerRoomCode" title="Kopyalamak için tıkla" onclick="copyRoomCode()"></span>
+    </div>
+  </div>
+  <div class="header-center">
+    <div class="online-users" id="onlineUsers"></div>
+  </div>
+  <div class="header-right">
+    <button class="icon-btn" onclick="toggleThemePanel()" title="Tema">🎨</button>
+    <button class="icon-btn" onclick="toggleMusic()" title="Müzik">🎵</button>
+    <div class="status-select-wrap">
+      <select id="statusSelect" onchange="updateStatus(this.value)">
+        <option value="Çevrimiçi">🟢 Çevrimiçi</option>
+        <option value="Meşgul">🟡 Meşgul</option>
+        <option value="Yemek Yiyor">🍽️ Yemek Yiyor</option>
+        <option value="Müzik Dinliyor">🎵 Müzik Dinliyor</option>
+        <option value="AFK">💤 AFK</option>
+      </select>
+    </div>
+  </div>
+</header>
+
+<!-- Main -->
+<main class="main-layout" id="mainLayout" style="display:none">
+
+  <!-- Sol: Kullanıcılar + Aktiviteler -->
+  <aside class="sidebar-left">
+    <div class="panel">
+      <div class="panel-title">👥 Odadakiler <span id="userCount" class="badge">0</span></div>
+      <div class="users-list" id="usersList"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-title">📋 Aktiviteler</div>
+      <div class="activity-btns">
+        <button class="act-btn" onclick="rollDice()">🎲 Zar At</button>
+        <button class="act-btn" onclick="openPollModal()">📊 Anket Aç</button>
+        <button class="act-btn" onclick="sendReaction('🎉')">🎉 Konfeti</button>
+        <button class="act-btn" onclick="sendReaction('❤️')">❤️ Kalp At</button>
+        <button class="act-btn" onclick="sendReaction('👏')">👏 Alkış</button>
+        <button class="act-btn" onclick="sendReaction('😂')">😂 Güldür</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Orta: Oda Sahnesi + Sohbet -->
+  <section class="center-section">
+    <!-- Oda Sahnesi -->
+    <div class="room-scene" id="roomScene">
+      <div class="room-table">
+        <div class="table-surface">
+          <div class="table-items" id="tableItems"></div>
+        </div>
+      </div>
+      <div class="avatars-ring" id="avatarsRing"></div>
+      <div class="reactions-layer" id="reactionsLayer"></div>
+    </div>
+
+    <!-- Sohbet -->
+    <div class="chat-box">
+      <div class="chat-messages" id="chatMessages"></div>
+      <div class="chat-input-row">
+        <div class="emoji-quick">
+          <button onclick="addEmoji('😂')">😂</button>
+          <button onclick="addEmoji('❤️')">❤️</button>
+          <button onclick="addEmoji('👍')">👍</button>
+          <button onclick="addEmoji('🔥')">🔥</button>
+          <button onclick="addEmoji('🎉')">🎉</button>
+        </div>
+        <div class="chat-send-row">
+          <input type="text" id="chatInput" placeholder="Mesaj yaz..." maxlength="300"
+            onkeydown="if(event.key==='Enter')sendChat()" />
+          <button class="send-btn" onclick="sendChat()">➤</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Sağ: Menü -->
+  <aside class="sidebar-right">
+    <div class="panel menu-panel">
+      <div class="panel-title">🍕 Yemek & İçecek</div>
+      <div class="menu-categories" id="menuCategories">
+        <button class="cat-btn active" onclick="switchCategory('food', this)">🍕 Yemek</button>
+        <button class="cat-btn" onclick="switchCategory('drink', this)">🥤 İçecek</button>
+        <button class="cat-btn" onclick="switchCategory('dessert', this)">🍰 Tatlı</button>
+      </div>
+      <div class="menu-items" id="menuItems"></div>
+    </div>
+    <div class="panel orders-panel">
+      <div class="panel-title">📦 Siparişler</div>
+      <div class="orders-list" id="ordersList"></div>
+    </div>
+  </aside>
+</main>
+
+<!-- Tema Paneli -->
+<div class="theme-panel" id="themePanel" style="display:none">
+  <div class="theme-panel-inner">
+    <h3>🎨 Oda Teması</h3>
+    <div class="theme-grid">
+      <button class="theme-btn" onclick="changeTheme('cafe')">☕ Kafe</button>
+      <button class="theme-btn" onclick="changeTheme('home')">🏠 Ev</button>
+      <button class="theme-btn" onclick="changeTheme('beach')">🏖️ Plaj</button>
+      <button class="theme-btn" onclick="changeTheme('night')">🌙 Gece Kulübü</button>
+      <button class="theme-btn" onclick="changeTheme('forest')">🌲 Orman</button>
+      <button class="theme-btn" onclick="changeTheme('space')">🚀 Uzay</button>
+    </div>
+    <button onclick="toggleThemePanel()" class="close-panel-btn">✕ Kapat</button>
+  </div>
+</div>
+
+<!-- Müzik Paneli -->
+<div class="music-panel" id="musicPanel" style="display:none">
+  <div class="music-panel-inner">
+    <h3>🎵 Ortak Müzik Listesi</h3>
+    <div class="now-playing" id="nowPlaying"><span>♫ Şu an çalan yok</span></div>
+    <div class="equalizer" id="equalizer">
+      <span></span><span></span><span></span><span></span><span></span>
+    </div>
+    <div class="add-song-form">
+      <input type="text" id="songTitle" placeholder="Şarkı adı..." />
+      <input type="text" id="songArtist" placeholder="Sanatçı..." />
+      <button onclick="addSong()">➕ Ekle</button>
+    </div>
+    <div class="playlist" id="playlistEl"></div>
+    <button onclick="toggleMusic()" class="close-panel-btn">✕ Kapat</button>
+  </div>
+</div>
+
+<!-- Anket Modal -->
+<div class="modal-overlay" id="pollModal" style="display:none" onclick="closePollModal(event)">
+  <div class="modal">
+    <h3>📊 Anket Oluştur</h3>
+    <input type="text" id="pollQuestion" placeholder="Soru..." maxlength="100" />
+    <input type="text" id="pollOpt1" placeholder="Seçenek 1..." maxlength="50" />
+    <input type="text" id="pollOpt2" placeholder="Seçenek 2..." maxlength="50" />
+    <input type="text" id="pollOpt3" placeholder="Seçenek 3 (isteğe bağlı)..." maxlength="50" />
+    <div class="modal-btns">
+      <button onclick="createPoll()" class="btn-modal-ok">Oluştur</button>
+      <button onclick="closePollModal()" class="btn-modal-cancel">İptal</button>
+    </div>
+  </div>
+</div>
+
+<!-- Bildirim -->
+<div class="toast" id="toast"></div>
+
+<script src="room.js"></script>
+</body>
+</html>
